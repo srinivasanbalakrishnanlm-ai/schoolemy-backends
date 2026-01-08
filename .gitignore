@@ -1,0 +1,41 @@
+# Node modules
+/node_modules/
+
+# Environment variables
+.env
+#.env.*
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Build
+/dist
+/build
+
+# IDEs
+.vscode/
+.idea/
+
+# Coverage reports
+coverage/
+
+# Temp files
+*.swp
+*.swo
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+.terraform.lock.hcl
+
+# Terraform variable files (may contain secrets)
+#terraform/environment/*.tfvars
