@@ -10,11 +10,19 @@ const smtpSecure = smtpPort === 465;
 const hasAuthUser = Boolean(process.env.EMAIL_ADMIN);
 const hasAuthPass = Boolean(process.env.EMAIL_PASS);
 
-console.info("SMTP Config:", {
+// Extended timeouts (30s for connection, 30s for greeting) to handle slow/congested networks
+const connectionTimeout = Number(process.env.SMTP_CONNECTION_TIMEOUT || 30000); // 30s
+const greetingTimeout = Number(process.env.SMTP_GREETING_TIMEOUT || 30000); // 30s
+const socketTimeout = Number(process.env.SMTP_SOCKET_TIMEOUT || 30000); // 30s
+
+console.info("SMTP Config (Init):", {
   host: smtpHost,
   port: smtpPort,
   secure: smtpSecure,
   authAvailable: hasAuthUser && hasAuthPass,
+  connectionTimeout,
+  greetingTimeout,
+  socketTimeout,
 });
 
 const transporter = nodemailer.createTransport({
@@ -27,28 +35,18 @@ const transporter = nodemailer.createTransport({
         pass: process.env.EMAIL_PASS,
       }
     : undefined,
-  connectionTimeout: Number(process.env.SMTP_CONNECTION_TIMEOUT || 10000),
-  greetingTimeout: Number(process.env.SMTP_GREETING_TIMEOUT || 10000),
+  connectionTimeout,
+  greetingTimeout,
+  socketTimeout,
+  logger: process.env.DEBUG_SMTP === "true",
+  debug: process.env.DEBUG_SMTP === "true",
 });
 
-export const sendOtpEmail = async (email, otp) => {
+// Retry helper: attempt send up to 2 times with exponential backoff
+const sendOtpEmailWithRetry = async (email, otp, attempt = 1) => {
   try {
-    try {
-      await transporter.verify();
-      console.info("SMTP verify: connection OK");
-    } catch (verifyErr) {
-      console.error("SMTP verify failed:", {
-        code: verifyErr?.code,
-        command: verifyErr?.command,
-        message: verifyErr?.message,
-      });
-      return {
-        success: false,
-        message: "Error sending OTP email.",
-        error: verifyErr?.message,
-      };
-    }
-
+    console.info(`[OTP-Send] Attempt ${attempt} for ${email}`);
+    
     await transporter.sendMail({
       from: process.env.EMAIL_ADMIN,
       to: email,
@@ -65,14 +63,62 @@ export const sendOtpEmail = async (email, otp) => {
         </div>
       `,
     });
+    
+    console.info(`[OTP-Send] Success on attempt ${attempt}`);
     return { success: true, message: "OTP sent to Email successfully" };
   } catch (error) {
-    console.error("Error sending OTP email:", {
+    const isRetryable =
+      error?.code === "ETIMEDOUT" ||
+      error?.code === "ECONNREFUSED" ||
+      error?.code === "ENOTFOUND" ||
+      error?.message?.includes?.("Connection timeout") ||
+      error?.message?.includes?.("socket hang up");
+
+    const errorInfo = {
       code: error?.code,
       command: error?.command,
       message: error?.message,
+      attempt,
+      retryable: isRetryable,
+    };
+
+    if (isRetryable && attempt < 2) {
+      console.warn(`[OTP-Send] Retryable error on attempt ${attempt}:`, errorInfo);
+      const waitMs = attempt === 1 ? 2000 : 5000;
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+      return sendOtpEmailWithRetry(email, otp, attempt + 1);
+    }
+
+    console.error(`[OTP-Send] Failed after ${attempt} attempt(s):`, errorInfo);
+    return { success: false, message: "Error sending OTP email.", error: error?.message };
+  }
+};
+
+export const sendOtpEmail = async (email, otp) => {
+  try {
+    try {
+      console.info("[SMTP] Verifying connection...");
+      await transporter.verify();
+      console.info("[SMTP] Verify: connection OK");
+    } catch (verifyErr) {
+      const verifyErrInfo = {
+        code: verifyErr?.code,
+        command: verifyErr?.command,
+        message: verifyErr?.message,
+      };
+      console.error("[SMTP] Verify failed:", verifyErrInfo);
+      
+      console.info("[SMTP] Attempting send despite verify failure...");
+      return sendOtpEmailWithRetry(email, otp);
+    }
+
+    return sendOtpEmailWithRetry(email, otp);
+  } catch (error) {
+    console.error("[OTP-Send] Unexpected error:", {
+      code: error?.code,
+      message: error?.message,
     });
-    return { success: false, message: "Error sending OTP email.", error: error.message };
+    return { success: false, message: "Error sending OTP email.", error: error?.message };
   }
 };
 export default transporter;
