@@ -28,8 +28,16 @@ const app = express();
 const PORT = process.env.PORT || 8000;
 const isLambda = !!process.env.AWS_LAMBDA_FUNCTION_NAME;
 
+// CORS Configuration
+const corsOptions = {
+  origin: process.env.FRONTEND_URL || '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true,
+};
+
 // Middleware
-app.use(cors());
+app.use(cors(corsOptions));
 app.use(express.json());
 
 // Ensure CORS headers are always present (useful when running behind API Gateway)
