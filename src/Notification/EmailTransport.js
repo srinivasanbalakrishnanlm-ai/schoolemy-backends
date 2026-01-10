@@ -2,14 +2,27 @@ import nodemailer from "nodemailer";
 import dotenv from "dotenv";
 dotenv.config();
 
-// Derive SMTP connection settings safely
-const smtpHost = process.env.SMTP_HOST || "smtp.gmail.com";
+// Derive SMTP connection settings safely (trim to avoid whitespace bugs)
+const smtpHost = (process.env.SMTP_HOST || "smtp.gmail.com").trim();
 const rawPort = process.env.SMTP_PORT || "587";
-const smtpPort = Number(rawPort);
-const smtpSecure = smtpPort === 465; // 465 -> secure true, 587 -> secure false
+const parsedPort = Number(rawPort);
+const smtpPort = Number.isFinite(parsedPort) ? parsedPort : 587;
+
+// Allow explicit override via SMTP_SECURE env, otherwise infer from port
+const smtpSecure = process.env.SMTP_SECURE === "true"
+  ? true
+  : process.env.SMTP_SECURE === "false"
+    ? false
+    : smtpPort === 465;
 
 const hasAuthUser = Boolean(process.env.EMAIL_ADMIN);
 const hasAuthPass = Boolean(process.env.EMAIL_PASS);
+const defaultFrom = (process.env.SMTP_FROM || process.env.EMAIL_ADMIN || "").trim();
+const missingSecrets = [
+  !hasAuthUser && "EMAIL_ADMIN",
+  !hasAuthPass && "EMAIL_PASS",
+  !defaultFrom && "SMTP_FROM",
+].filter(Boolean);
 
 // Extended timeouts (30s for connection, 30s for greeting) to handle slow/congested networks
 const connectionTimeout = Number(process.env.SMTP_CONNECTION_TIMEOUT || 30000); // 30s
@@ -23,6 +36,7 @@ console.info(
     port: smtpPort,
     secure: smtpSecure,
     authAvailable: hasAuthUser && hasAuthPass,
+    from: defaultFrom || "<not set>",
     connectionTimeout,
     greetingTimeout,
     socketTimeout,
@@ -43,6 +57,12 @@ const transporter = nodemailer.createTransport({
   connectionTimeout,
   greetingTimeout,
   socketTimeout,
+  requireTLS: smtpPort === 587,
+  tls: {
+    // Enforce modern TLS; allow opt-out via env if a legacy SMTP requires it
+    minVersion: "TLSv1.2",
+    rejectUnauthorized: process.env.SMTP_REJECT_UNAUTHORIZED !== "false",
+  },
   // Enable protocol logging to diagnose connection stages
   logger: process.env.DEBUG_SMTP === "true",
   debug: process.env.DEBUG_SMTP === "true",
@@ -54,7 +74,7 @@ const sendOtpEmailWithRetry = async (email, otp, attempt = 1) => {
     console.info(`[OTP-Send] Attempt ${attempt} for ${email}`);
     
     await transporter.sendMail({
-      from: process.env.EMAIL_ADMIN,
+      from: defaultFrom,
       to: email,
       subject: "Verify Your schoolemy Account",
       html: `
@@ -103,6 +123,11 @@ const sendOtpEmailWithRetry = async (email, otp, attempt = 1) => {
 
 export const sendOtpEmail = async (email, otp) => {
   try {
+    if (missingSecrets.length) {
+      console.error("[SMTP] Missing required env vars:", missingSecrets);
+      return { success: false, message: `SMTP config missing: ${missingSecrets.join(", ")}` };
+    }
+
     // Verify SMTP connection before attempting to send
     try {
       console.info("[SMTP] Verifying connection...");
